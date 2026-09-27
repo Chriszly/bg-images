@@ -205,8 +205,9 @@ path count produces `palette ** path_count` images automatically.
 ## Wild animals
 
 `generate-animal-pngs.py` renders every color combination of the 20 SVGs in
-`wild-animals/`. Each of those files is a single animal drawn as line art inside
-`<defs>` and then shown twice by `<use>`:
+`wild-animals/`. `generate-animal-pngs.ps1` is its PowerShell twin, covering the
+same options with `-` prefixes. Each of those files is a single animal drawn as
+line art inside `<defs>` and then shown twice by `<use>`:
 
 ```xml
 <use href="#half" stroke="#19e3ee"/>                        <!-- slot 1 -->
@@ -244,6 +245,17 @@ python generate-animal-pngs.py --shard 0/8        # render 1 of 8 chunks
 python generate-animal-pngs.py --animal fox,wolf  # just those two animals
 python generate-animal-pngs.py --background white
 ```
+
+```powershell
+.\generate-animal-pngs.ps1 -DryRun
+.\generate-animal-pngs.ps1 -Shard 0/8
+.\generate-animal-pngs.ps1 -Animal fox,wolf
+```
+
+Quote a comma-separated list if the shell splits on the comma, as PowerShell
+does with an unquoted `-Animal fox,wolf` — it arrives as the single string
+`fox wolf`, which both scripts also accept. The two scripts write identical
+paths and are byte-for-byte equivalent output, so a run can be split across them.
 
 ### Parameters
 

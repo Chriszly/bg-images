@@ -90,6 +90,7 @@ def animal_name(stem):
 
 def load_animals(src_dir, only=None):
     """Return [(name, svg_path)] sorted by name, optionally filtered by ``only``."""
+    src_dir = Path(src_dir)
     files = sorted(src_dir.glob(SOURCE_GLOB))
     animals = [(animal_name(f.stem), f) for f in files]
     if only:
