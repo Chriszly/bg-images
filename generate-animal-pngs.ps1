@@ -280,19 +280,27 @@ $baseArgs = @(
 # becomes an ordinary failure that the retry pass picks up.
 function Wait-Render {
   param([array]$Running, [int]$TimeoutSec)
+  # Wait on the whole batch with a single timeout budget. Waiting on each
+  # process in turn would make a batch of N hung renders cost N timeouts, so the
+  # bound would scale with concurrency instead of being a real bound.
+  $ids = @($Running | ForEach-Object { $_.proc.Id })
+  try {
+    Wait-Process -Id $ids -Timeout $TimeoutSec -ErrorAction Stop
+    return
+  } catch { }
+  # At least one blew the budget. Give the rest a brief grace in case they were
+  # only just finishing, then kill whatever is left so no helper process keeps
+  # holding the output file.
+  try {
+    Wait-Process -Id $ids -Timeout ([Math]::Min(5, $TimeoutSec)) -ErrorAction SilentlyContinue
+  } catch { }
   foreach ($r in $Running) {
-    $exited = $true
-    try {
-      Wait-Process -Id $r.proc.Id -Timeout $TimeoutSec -ErrorAction Stop
-    } catch {
-      $exited = $false
-    }
-    if (-not $exited) {
-      # taskkill /T takes the whole tree down, so no helper process is left
-      # holding the output file.
-      & taskkill /F /T /PID $r.proc.Id 2>$null | Out-Null
-      Stop-Process -Id $r.proc.Id -Force -ErrorAction SilentlyContinue
-    }
+    $alive = $true
+    try { $alive = -not $r.proc.HasExited } catch { $alive = $false }
+    if (-not $alive) { continue }
+    # taskkill /T takes the whole tree down.
+    & taskkill /F /T /PID $r.proc.Id 2>$null | Out-Null
+    Stop-Process -Id $r.proc.Id -Force -ErrorAction SilentlyContinue
   }
 }
 
