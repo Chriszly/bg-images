@@ -6,3 +6,5 @@ __pycache__/
 # Local render output. *.png already covers the images, but naming the folder
 # keeps the intent obvious and stops the empty dir showing up as untracked.
 robot-combo/
+animal-pictures/
+animal-pictures-*/

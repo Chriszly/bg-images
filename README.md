@@ -4,7 +4,7 @@ Collection of SVG background images and the tooling used to render them into PNG
 
 ## What happens here
 
-This repo takes a layered SVG (`bear -split.svg`) and renders it into hundreds of color variants as 2160×2160 PNGs using [Inkscape](https://inkscape.org). A second generator does the same for the robot line art, recoloring each of its 5 paths independently — and with `--sweep` can hold most of those paths fixed to render a bear-style 400-image set instead of 3.2 million — see [Robot line art](#robot-line-art).
+This repo takes a layered SVG (`bear -split.svg`) and renders it into hundreds of color variants as 2160×2160 PNGs using [Inkscape](https://inkscape.org). A second generator does the same for the robot line art, recoloring each of its 5 paths independently — and with `--sweep` can hold most of those paths fixed to render a bear-style 400-image set instead of 3.2 million — see [Robot line art](#robot-line-art). A third renders the 20 mirrored wild animals in every color pairing, filed by animal and then by first color — see [Wild animals](#wild-animals).
 
 `generate-bear-pngs.py` (or its equivalent `generate-bear-pngs.ps1`):
 
@@ -12,6 +12,8 @@ This repo takes a layered SVG (`bear -split.svg`) and renders it into hundreds o
 2. Builds every 20×20 color combination by swapping the two placeholder colors in the SVG (`#00ffff` and `#ff7a00`) for each palette pair.
 3. Renders each combination with Inkscape, parallelized (8 concurrent processes), with automatic retry of failed renders.
 4. Writes results as `bear_<left-color>_<right-color>.png`.
+
+## The recolouring pipeline
 
 ### Usage
 
@@ -199,6 +201,103 @@ path count produces `palette ** path_count` images automatically.
 > **600 GB** and several days of rendering. Plan disk space and use `--shard` to
 > divide the work; the default single-machine invocation will try to render all
 > 3,200,000 images.
+
+## Wild animals
+
+`generate-animal-pngs.py` renders every color combination of the 20 SVGs in
+`wild-animals/`. `generate-animal-pngs.ps1` is its PowerShell twin, covering the
+same options with `-` prefixes. Each of those files is a single animal drawn as
+line art inside `<defs>` and then shown twice by `<use>`:
+
+```xml
+<use href="#half" stroke="#19e3ee"/>                        <!-- slot 1 -->
+<use href="#half" stroke="#ff8a1c" transform="translate(400,0)
+                                               scale(-1,1)"/> <!-- slot 2 -->
+```
+
+Slot 1 is the **upright** animal and slot 2 is the **same geometry mirrored**
+about the seam at `x=198`, so the pair reads as one symmetric two-tone image.
+Recoloring therefore never touches the geometry — only the `stroke` on the two
+`<use>` tags changes. That is what lets one script handle every file regardless
+of formatting: some sources are single-line, while `geo_fox.svg` and
+`geo_monkey.svg` are indented, commented, and carry no `transform` on slot 1.
+
+The two placeholder hexes are also unique in each file, but the generator
+applies colors by `<use>` **position** rather than by substituting the hex. Each
+source embeds a large C2PA provenance blob in `<metadata>` whose base64 payload
+is arbitrary text, so a hex string can in principle appear inside it; matching
+the `stroke` attribute cannot corrupt it.
+
+With the shared 20-color palette that is 20 × 20 per animal, and 20 animals makes
+20³ = **8,000 PNGs**, filed as:
+
+```
+animal-pictures/<animal>/<first-color>/<animal>_<first>_<second>.png
+```
+
+so the **first** color is the subdirectory and the second color is the file —
+400 folders of 20 PNGs each.
+
+```bash
+python generate-animal-pngs.py --dry-run          # preview the plan
+python generate-animal-pngs.py                    # all 8,000
+python generate-animal-pngs.py --shard 0/8        # render 1 of 8 chunks
+python generate-animal-pngs.py --animal fox,wolf  # just those two animals
+python generate-animal-pngs.py --background white
+```
+
+```powershell
+.\generate-animal-pngs.ps1 -DryRun
+.\generate-animal-pngs.ps1 -Shard 0/8
+.\generate-animal-pngs.ps1 -Animal fox,wolf
+```
+
+Quote a comma-separated list if the shell splits on the comma, as PowerShell
+does with an unquoted `-Animal fox,wolf` — it arrives as the single string
+`fox wolf`, which both scripts also accept. The two scripts write identical
+paths and are byte-for-byte equivalent output, so a run can be split across them.
+
+### Parameters
+
+| Parameter          | Description                                                                    |
+|--------------------|--------------------------------------------------------------------------------|
+| `--background`     | Export background: `black` (default), `white`, `transparent`, or a hex color. A non-black background appends a suffix (`animal-pictures-white`) so runs cannot overwrite each other. |
+| `--animal`         | Comma-separated animal names to restrict the run to, e.g. `fox,wolf`. Default: every `geo_*.svg`. |
+| `--first-colors`   | Comma-separated palette entries for the first color. Default: the whole palette. |
+| `--second-colors`  | Comma-separated palette entries for the second color. Default: the whole palette. |
+| `--distinct-only`  | Skip combinations where both colors are the same.                            |
+| `--src-dir`        | Directory of source SVGs; defaults to `wild-animals` next to the script.       |
+| `--out-dir`/`--out-name` | Output location; defaults to `animal-pictures` next to the script.       |
+| `--shard i/n`      | Render only shard `i` of `n`. Shards tile the space with no gaps or overlap.   |
+| `--start-index` / `--end-index` | Explicit half-open range of combination indices.                      |
+| `--limit`          | Stop after this many images in the current run.                               |
+| `--dry-run`        | Print the plan and sample paths without rendering.                            |
+| `--overwrite`      | Re-render PNGs that already exist (default is to skip them).                   |
+| `--tmp-dir`        | Scratch directory for intermediate SVGs.                                       |
+| `--concurrency`    | Number of parallel Inkscape processes (default 8).                             |
+| `--render-timeout` | Seconds before a single Inkscape render is killed and counted as a failure (default 120). |
+| `--width`/`--height` | Output PNG dimensions in pixels (default 2160).                             |
+| `--inkscape`       | Path to `inkscape.exe`; defaults to PATH lookup, then the standard install path. |
+
+### Output
+
+The resume check and the render target both resolve through the same path
+helper, so a grouped run is as resumable as a flat one: re-running the full
+command reports `8000 already present` and re-renders nothing. Sources that do
+not have exactly two `<use>` tags are skipped with a warning rather than
+rendered incorrectly, so adding a differently-structured SVG to `wild-animals/`
+cannot quietly produce a broken image.
+
+`--render-timeout` is not optional in practice. Inkscape occasionally wedges on
+a PNG export and never exits, and because a batch is drained with `pool.map`, a
+single stuck render would otherwise block its whole batch — and every batch
+after it — with no output and no error. The run then looks hung rather than
+failed. With the timeout in place a hang becomes an ordinary failure that the
+retry pass picks up, and a genuinely wedged image gets reported by name.
+
+A full run is ~1.5 GB and takes well under an hour at concurrency 8, so unlike
+the robot set it does not need sharding to be practical — `--shard` is there for
+interrupted runs and for spreading the work over several machines.
 
 ## Requirements
 
