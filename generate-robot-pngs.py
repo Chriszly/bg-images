@@ -247,20 +247,63 @@ def build_svg(source_text, combo, stroke_width=None):
     return "".join(parts)
 
 
-def render(svg_path, png_path, base_args, inkscape):
-    result = subprocess.run(
-        [inkscape]
-        + base_args
-        + ["--export-filename={}".format(png_path), str(svg_path)],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    return result.returncode == 0 and png_path.exists()
+def kill_tree(proc):
+    """Kill a render process and any children it spawned.
+
+    Inkscape can leave helper processes behind, and a surviving child would keep
+    holding the output file. ``taskkill /T`` takes the whole tree down; on other
+    platforms there is nothing to walk, so the direct child is enough.
+    """
+    if proc.poll() is not None:
+        return
+    if os.name == "nt":
+        subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+    try:
+        proc.wait(timeout=15)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    try:
+        proc.kill()
+    except OSError:
+        pass
+
+
+def render(svg_path, png_path, base_args, inkscape, timeout):
+    """Render one SVG to PNG. False on failure, non-zero exit, or timeout.
+
+    The timeout is not optional. Inkscape occasionally wedges on a PNG export
+    and never exits; because a batch is drained as a unit, one stuck render
+    would otherwise block its whole batch -- and every later batch -- with no
+    output and no error, which is exactly how a run appears to hang. With a
+    timeout the hang becomes an ordinary failure that the retry pass picks up,
+    and a genuinely wedged image is reported by name instead of stalling the run
+    indefinitely. This matters more here than elsewhere: the full space is
+    millions of images, so "blocked forever" is a real possibility rather than
+    a thought experiment.
+    """
+    cmd = [inkscape] + base_args + [
+        "--export-filename={}".format(png_path), str(svg_path)
+    ]
+    kwargs = {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
+    if os.name == "nt":
+        # Its own process group, so kill_tree can take descendants with it.
+        kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    proc = subprocess.Popen(cmd, **kwargs)
+    try:
+        proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        kill_tree(proc)
+        return False
+    return proc.returncode == 0 and png_path.exists()
 
 
 def process_batch(batch, source_text, out, tmp, base_args, inkscape,
                   concurrency, overwrite, prefix, stroke_width=None,
-                  group_slot=None, sweep_slots=None):
+                  group_slot=None, sweep_slots=None, timeout=120.0):
     """Render one batch. Returns (rendered, skipped, failures)."""
     def task(combo):
         png = png_path(out, prefix, combo, sweep_slots, group_slot)
@@ -274,9 +317,9 @@ def process_batch(batch, source_text, out, tmp, base_args, inkscape,
             )
         except OSError as exc:
             return (combo, str(exc), False)
-        if render(svg, png, base_args, inkscape):
+        if render(svg, png, base_args, inkscape, timeout):
             return (combo, None, False)
-        return (combo, "render failed", False)
+        return (combo, "render failed or timed out", False)
 
     with ThreadPoolExecutor(max_workers=concurrency) as pool:
         results = list(pool.map(task, batch))
@@ -372,6 +415,10 @@ def main():
     parser.add_argument("--tmp-dir", dest="tmp_dir", default="",
                         help="scratch directory (default: temp dir)")
     parser.add_argument("--concurrency", type=int, default=8)
+    parser.add_argument("--render-timeout", dest="render_timeout", type=float,
+                        default=120.0,
+                        help="seconds before a single Inkscape render is "
+                             "killed and treated as a failure (default: 120)")
     parser.add_argument("--width", type=int, default=2160)
     parser.add_argument("--height", type=int, default=2160)
     parser.add_argument("--overwrite", action="store_true",
@@ -534,7 +581,7 @@ def main():
         b_rendered, b_skipped, b_failures = process_batch(
             batch, source_text, out, tmp, base_args, inkscape,
             args.concurrency, args.overwrite, prefix, stroke_width, group_slot,
-            sweep_slots,
+            sweep_slots, args.render_timeout,
         )
         rendered += b_rendered
         skipped += b_skipped
@@ -567,7 +614,7 @@ def main():
             _r, _s, missed = process_batch(
                 failures[i:i + chunk], source_text, out, tmp, base_args,
                 inkscape, 2, args.overwrite, prefix, stroke_width, group_slot,
-                sweep_slots,
+                sweep_slots, args.render_timeout * 2,
             )
             retry_failures.extend(missed)
         failures = retry_failures

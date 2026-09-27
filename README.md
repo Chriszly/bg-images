@@ -33,6 +33,7 @@ python generate-bear-pngs.py --swap-color ff0000    # replace ff0000 with black
 | `--source`      | Path to the source SVG; defaults to `bear -split.svg` next to the script.   |
 | `--out-dir`     | Output base directory; defaults to the script's directory.                  |
 | `--concurrency` | Number of parallel Inkscape processes (default 8).                         |
+| `--render-timeout` | Seconds before a single Inkscape render is killed and counted as a failure (default 120). |
 | `--width`/`--height` | Output PNG dimensions in pixels (default 2160).                       |
 
 ### Output
@@ -150,7 +151,24 @@ python generate-robot-pngs.py --swap-color ff0000
 | `--out-dir`        | Output base directory; defaults to the script's directory.                     |
 | `--tmp-dir`        | Scratch directory for intermediate SVGs.                                       |
 | `--concurrency`    | Number of parallel Inkscape processes (default 8).                             |
+| `--render-timeout` | Seconds before a single Inkscape render is killed and counted as a failure (default 120). |
 | `--width`/`--height` | Output PNG dimensions in pixels (default 2160).                             |
+
+### Render timeouts
+
+All four generators bound every individual Inkscape render. Inkscape
+occasionally wedges on a PNG export and never exits, and because a batch is
+drained as a unit, one stuck render used to block its whole batch — and every
+batch after it — with no output and no error, so the run simply looked hung.
+`--render-timeout` (PowerShell: `-RenderTimeout`, default 120s) turns that into
+an ordinary failure the retry pass picks up, and a genuinely wedged image is
+reported by name. The retry gets twice the budget, since some wedges are only a
+slow first run rather than a true deadlock.
+
+On Windows each render gets its own process group and is killed with
+`taskkill /T`, so no Inkscape helper process is left holding the output file. In
+the PowerShell scripts the wait covers the whole batch with a single timeout
+budget, so a batch of N hung renders costs one timeout rather than N.
 
 ### Output
 

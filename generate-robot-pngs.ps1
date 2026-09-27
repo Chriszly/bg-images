@@ -40,6 +40,7 @@ param(
   [string]$OutName = '',
   [string]$TmpDir = '',
   [int]$Concurrency = 8,
+  [int]$RenderTimeout = 120,
   [int]$Width = 2160,
   [int]$Height = 2160,
   [switch]$Overwrite,
@@ -338,17 +339,52 @@ $baseArgs = @(
   "--export-height=$Height"
 ) + $bg
 
+# The timeout is not optional. Inkscape occasionally wedges on a PNG export and
+# never exits; because a batch is drained as a unit, one stuck render would
+# otherwise block its whole batch -- and every later batch -- with no output and
+# no error, which is exactly how a run appears to hang. With a timeout the hang
+# becomes an ordinary failure that the retry pass picks up, and a genuinely
+# wedged image gets reported by name instead of stalling the run indefinitely.
+# This matters more here than elsewhere: the full space is millions of images,
+# so "blocked forever" is a real possibility rather than a thought experiment.
+function Wait-Render {
+  param([array]$Running, [int]$TimeoutSec)
+  # Wait on the whole batch with a single timeout budget. Waiting on each
+  # process in turn would make a batch of N hung renders cost N timeouts, so the
+  # bound would scale with concurrency instead of being a real bound.
+  $ids = @($Running | ForEach-Object { $_.proc.Id })
+  try {
+    Wait-Process -Id $ids -Timeout $TimeoutSec -ErrorAction Stop
+    return
+  } catch { }
+  # At least one blew the budget. Give the rest a brief grace in case they were
+  # only just finishing, then kill whatever is left so no helper process keeps
+  # holding the output file.
+  try {
+    Wait-Process -Id $ids -Timeout ([Math]::Min(5, $TimeoutSec)) -ErrorAction SilentlyContinue
+  } catch { }
+  foreach ($r in $Running) {
+    $alive = $true
+    try { $alive = -not $r.proc.HasExited } catch { $alive = $false }
+    if (-not $alive) { continue }
+    # taskkill /T takes the whole tree down.
+    & taskkill /F /T /PID $r.proc.Id 2>$null | Out-Null
+    Stop-Process -Id $r.proc.Id -Force -ErrorAction SilentlyContinue
+  }
+}
+
 function Invoke-Render {
-  param([array]$Items, [int]$Parallel)
-  $procs = @()
+  param([array]$Items, [int]$Parallel, [int]$TimeoutSec)
+  $running = @()
   foreach ($j in $Items) {
-    $procs += Start-Process -FilePath $inkscape -ArgumentList ($baseArgs + @("--export-filename=$($j.png)", $j.svg)) -PassThru
-    if ($procs.Count -ge $Parallel) {
-      $procs | Wait-Process
-      $procs = @()
+    $p = Start-Process -FilePath $inkscape -ArgumentList ($baseArgs + @("--export-filename=$($j.png)", $j.svg)) -PassThru
+    $running += [pscustomobject]@{ proc = $p; png = $j.png }
+    if ($running.Count -ge $Parallel) {
+      Wait-Render -Running $running -TimeoutSec $TimeoutSec
+      $running = @()
     }
   }
-  $procs | Wait-Process
+  if ($running.Count -gt 0) { Wait-Render -Running $running -TimeoutSec $TimeoutSec }
 }
 
 $planned   = $end - $start
@@ -371,7 +407,7 @@ for ($i = $start; $i -lt $end; $i += $batchSize) {
     $batch += [pscustomobject]@{ svg = $svgTmp; png = $png }
   }
   if ($batch.Count -gt 0) {
-    Invoke-Render $batch $Concurrency
+    Invoke-Render $batch $Concurrency $RenderTimeout
     $missing = @($batch | Where-Object { -not (Test-Path -LiteralPath $_.png) })
     $rendered += ($batch.Count - $missing.Count)
     foreach ($m in $missing) { $failures += $m }
@@ -397,7 +433,9 @@ if ($failures.Count -gt 0) {
     $hiRetry = [Math]::Min($i + $step, $failures.Count)
     for ($k = $i; $k -lt $hiRetry; $k++) { $slice += $failures[$k] }
     if ($slice.Count -eq 0) { continue }
-    Invoke-Render $slice 2
+    # A render that already timed out once gets longer on the retry, since some
+    # wedges are only a slow first run rather than a true deadlock.
+    Invoke-Render $slice 2 ($RenderTimeout * 2)
     foreach ($j in $slice) {
       if (Test-Path -LiteralPath $j.png) { $rendered++ } else { $retry += $j }
     }
