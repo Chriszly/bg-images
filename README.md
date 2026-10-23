@@ -200,6 +200,27 @@ path count produces `palette ** path_count` images automatically.
 > divide the work; the default single-machine invocation will try to render all
 > 3,200,000 images.
 
+## Desktop wallpapers
+
+Two square wallpaper sources that work on both landscape and portrait 4K screens:
+
+- `bear-wallpaper.svg`: the split bear on a dark background, with a soft glow behind each half in that half's color.
+- `blueprint-wallpaper.svg`: the robot building its arm, drawn as a blueprint.
+
+All artwork stays inside the centre 9/16 square of the canvas, which is the area that both a 16:9 and a 9:16 crop keep. Export them square at 3840×3840 and set them in Windows with **Fill**. A landscape screen crops away the top and bottom, a portrait screen crops away the sides, and nothing is scaled up.
+
+`bear-wallpaper.svg` uses the same `#00ffff` / `#ff7a00` placeholders as `bear -split.svg` (the glow uses them too), so the bear generator renders the full 400-image set:
+
+```bash
+python generate-bear-pngs.py --source bear-wallpaper.svg --width 3840 --height 3840 --out-dir wallpapers
+```
+
+The output lands in `wallpapers/bear-pngs` (about 0.9 MB per PNG, ~360 MB in total). The blueprint is a single image:
+
+```bash
+inkscape --export-type=png --export-width=3840 --export-height=3840 --export-filename=blueprint-3840.png blueprint-wallpaper.svg
+```
+
 ## Requirements
 
 - Windows
